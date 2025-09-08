@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WPlace AutoBOT</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-content">
+                <img src="../icons/icon32.png" alt="AutoBOT" class="header-icon">
+                <h1>WPlace AutoBOT</h1>
+            </div>
+            <div class="status-indicator" id="statusIndicator">
+                <span class="status-dot" id="statusDot"></span>
+                <span id="statusText">Ready</span>
+            </div>
+        </header>
+
+        <main>
+            <div class="script-section">
+                <h3>Available Scripts</h3>
+                <div class="scripts-list" id="scriptsList">
+                    <!-- Scripts will be populated here -->
+                </div>
+            </div>
+			
+			
+<div class="script-item">
+    <div class="script-info">
+        <span class="script-name">Team Chat</span>
+        <span class="script-description">Comunicación en tiempo real</span>
+    </div>
+    <button class="script-btn" id="chatToggleBtn">Chat</button>
+</div>
+
+            <div class="logs-section">
+                <h4>Activity Log</h4>
+                <div class="logs" id="logs">
+                    <div class="log-entry">Extension loaded and ready</div>
+                </div>
+            </div>
+        </main>
+
+        <footer>
+            <div class="footer-info">
+                <span>v1.0.0</span>
+                <a href="#" id="settingsBtn">Settings</a>
+            </div>
+        </footer>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+</html>
